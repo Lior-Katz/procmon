@@ -1,23 +1,25 @@
 #include <iostream>
+#include <fstream>
+#include <stdexcept>
+#include <cstddef>
 #include <Windows.h>
 #include <evntrace.h>
 #include <tdh.h>
 #include <string>
 
-#include "utils.h"
 #include "conf.h"
 
-using std::runtime_error;
 using std::cout;
 using std::endl;
 using std::ofstream;
+using std::runtime_error;
+using std::to_string;
 
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
 
-constexpr unsigned int PROCESS_CREATED_EVENT_ID = 4688;
-constexpr unsigned int PROCESS_EXITED_EVENT_ID = 4689;
-constexpr LPCSTR SESSION_NAME = "MySession";
+constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
+constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
 
 struct TracePropsWithName
 {
@@ -25,9 +27,9 @@ struct TracePropsWithName
 	WCHAR sessionName[MAX_SESSION_NAME_SIZE];
 };
 
-std::ofstream OpenLogFile()
+ofstream OpenLogFile()
 {
-	std::ofstream file(LOG_FILE);
+	ofstream file(LOG_FILE);
 
 	if (!file.is_open())
 	{
@@ -39,17 +41,18 @@ std::ofstream OpenLogFile()
 
 void Trace(std::ostream& file, const std::string& msg)
 {
-	file << msg << std::endl;
+	file << msg << endl;
 
 	if (REFLECT_TO_STDOUT)
 	{
-		std::cout << msg << std::endl;
+		cout << msg << endl;
 	}
 }
 
-void EventRecordCallback(PEVENT_RECORD pEvent)
+VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 {
-	if (pEvent == nullptr) {
+	if (pEvent == nullptr)
+	{
 		return;
 	}
 
@@ -68,7 +71,7 @@ void EventRecordCallback(PEVENT_RECORD pEvent)
 	// 	status = TdhGetEventInformation(pEvent, 0, NULL, pInfo, &bufferSize);
 
 	// 	if (status != ERROR_SUCCESS){
-	// 		std::cout << "TdhGetEventInformation initial call failed with status " << status << std::endl;
+	// 		cout << "TdhGetEventInformation initial call failed with status " << status << endl;
 	// 	}
 
 	// 	PWSTR eventName = (PWSTR)((PBYTE)pInfo + pInfo->EventNameOffset);
@@ -79,45 +82,47 @@ void EventRecordCallback(PEVENT_RECORD pEvent)
 	// }
 	// else if (status != ERROR_SUCCESS)
 	// {
-	// 	std::cout << "TdhGetEventInformation initial call failed with status " << status << std::endl;
+	// 	cout << "TdhGetEventInformation initial call failed with status " << status << endl;
 	// }
 
 	unsigned long pid = pEvent->EventHeader.ProcessId;
 	auto event_id = pEvent->EventHeader.EventDescriptor.Id;
 
 	if (event_id != PROCESS_CREATED_EVENT_ID && event_id != PROCESS_EXITED_EVENT_ID)
-	{
 		return;
-	}
 
 	std::ostream* output = static_cast<std::ostream*>(pEvent->UserContext);
 	std::string msg = "Event id: " + std::to_string(event_id) + "; pid: " + std::to_string(pid);
 	Trace(*output, msg);
 }
 
-void CreateTraceSession(wchar_t* session_name)
+void CreateTraceSession(wchar_t* session_name, CONTROLTRACE_ID* traceId, TracePropsWithName* trace)
 {
-	TracePropsWithName trace;
-	CONTROLTRACE_ID trace_id = 0;
+	ULONG bufferSize = sizeof(TracePropsWithName);
+	ZeroMemory(trace, bufferSize);
 
-	//EVENT_TRACE_PROPERTIES props = trace.props;
-	ULONG propsSize = sizeof(trace.props);
+	trace->props.Wnode.BufferSize = bufferSize;
+	trace->props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
 
-	ULONG bufferSize = sizeof(trace); // extra space for the session name
-	ZeroMemory(&trace, bufferSize);
+	trace->props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+	trace->props.LoggerNameOffset = offsetof(TracePropsWithName, sessionName);
+	wcscpy_s(trace->sessionName, session_name);
 
-	trace.props.Wnode.BufferSize = bufferSize;
-	trace.props.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-
-	trace.props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-	trace.props.LoggerNameOffset = offsetof(TracePropsWithName, sessionName);;
-	wcscpy_s(trace.sessionName, session_name);
-
-	auto res = StartTraceW(&trace_id, session_name, &trace.props);
+	auto res = ControlTraceW(0, session_name, &trace->props, EVENT_TRACE_CONTROL_STOP);
+	//if (res != ERROR_SUCCESS)
+	//{
+	//	throw runtime_error("Failed closing old trace session: " + to_string(res));
+	//}
+	res = StartTraceW(traceId, session_name, &trace->props);
 	if (res != ERROR_SUCCESS)
 	{
-		cout << "Got error code " << res << " from StartTraceW" << endl;
-		throw runtime_error("Failed starting trace session");
+		throw runtime_error("Failed starting trace session: " + to_string(res));
+	}
+
+	res = EnableTraceEx2(*traceId, (LPCGUID)&PROVIDER_GUID, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0, 0, 0, NULL);
+	if (res != ERROR_SUCCESS)
+	{
+		throw runtime_error("Failed enabling trace provider: " + to_string(res));
 	}
 }
 
@@ -138,11 +143,43 @@ PROCESSTRACE_HANDLE OpenTraceSession(wchar_t* session_name, void* context)
 	return trace_handle;
 }
 
-void main()
+int main()
 {
-	std::ofstream logFile = OpenLogFile();
-	wchar_t session_name[] = L"MySession"; // FIXME: fill log session name
-	CreateTraceSession(session_name);
-	auto process_trace_handle = OpenTraceSession(session_name, static_cast<void*>(&logFile));
-	ProcessTrace(&process_trace_handle, 1, nullptr, nullptr);
+	try
+	{
+		ofstream logFile = OpenLogFile();
+		wchar_t session_name[] = SESSION_NAME;
+
+		CONTROLTRACE_ID traceId = 0;
+		TracePropsWithName trace;
+		CreateTraceSession(session_name, &traceId, &trace);
+		cout << "Trace session created with id: " << traceId << endl;
+
+		PROCESSTRACE_HANDLE process_trace_handle = OpenTraceSession(session_name, static_cast<void*>(&logFile));
+		cout << "Trace session opened" << endl;
+
+		auto res = ProcessTrace(&process_trace_handle, 1, nullptr, nullptr);
+		if (res != ERROR_SUCCESS)
+		{
+			throw runtime_error("Failed process trace session: " + to_string(res));
+		}
+		cout << "Trace session processed" << endl;
+
+		logFile.close();
+		res = ControlTraceW(traceId, session_name, &trace.props, EVENT_TRACE_CONTROL_STOP);
+		if (res != ERROR_SUCCESS)
+		{
+			throw runtime_error("Failed closing trace session: " + to_string(res));
+		}
+		res = CloseTrace(process_trace_handle);
+		if (res != ERROR_SUCCESS)
+		{
+			throw runtime_error("Faild closing process trace session" + to_string(res));
+		}
+	}
+	catch (const std::runtime_error& e)
+	{
+		cout << e.what() << endl;
+	}
+	return 0;
 }
