@@ -8,6 +8,7 @@
 #include <string>
 
 #include "conf.h"
+#include <vector>
 
 using std::cout;
 using std::endl;
@@ -17,9 +18,10 @@ using std::to_string;
 
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
-
+#pragma comment(lib, "Ws2_32.lib")
 constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
 constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
+constexpr unsigned int TCP_ENDPOINT_CREATION_EVENT_ID = 1002;
 
 struct TracePropsWithName
 {
@@ -55,6 +57,12 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 	{
 		return;
 	}
+	//unsigned long pid = pEvent->EventHeader.ProcessId;
+	//auto event_id = pEvent->EventHeader.EventDescriptor.Id;
+	//if (pid != 12052)
+	//return;
+	//if (event_id != TCP_ENDPOINT_CREATION_EVENT_ID)
+	//	return;
 
 	// PTRACE_EVENT_INFO pInfo;
 	// ULONG bufferSize = 0;
@@ -64,20 +72,20 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 
 	// if (status == ERROR_INSUFFICIENT_BUFFER)
 	// {
-	// 	std::unique_ptr<BYTE[]> buffer(new BYTE[bufferSize]);
-	// 	PTRACE_EVENT_INFO pInfo = reinterpret_cast<PTRACE_EVENT_INFO>(buffer.get());
+	//	 std::unique_ptr<BYTE[]> buffer(new BYTE[bufferSize]);
+	//	 PTRACE_EVENT_INFO pInfo = reinterpret_cast<PTRACE_EVENT_INFO>(buffer.get());
 
-	// 	// Call TdhGetEventInformation a second time to get the actual event information
-	// 	status = TdhGetEventInformation(pEvent, 0, NULL, pInfo, &bufferSize);
+	//	 // Call TdhGetEventInformation a second time to get the actual event information
+	//	 status = TdhGetEventInformation(pEvent, 0, NULL, pInfo, &bufferSize);
 
-	// 	if (status != ERROR_SUCCESS){
-	// 		cout << "TdhGetEventInformation initial call failed with status " << status << endl;
-	// 	}
+	//	 if (status != ERROR_SUCCESS) {
+	//		 cout << "TdhGetEventInformation initial call failed with status " << status << endl;
+	//	 }
 
-	// 	PWSTR eventName = (PWSTR)((PBYTE)pInfo + pInfo->EventNameOffset);
-	// 	wprintf(L"Received event: %s\n", eventName);
-	// 	// Further parsing of properties would go here, often using TdhFormatProperty
-	// 	// or directly accessing the property data based on the pInfo structure.
+	//	 PWSTR eventName = (PWSTR)((PBYTE)pInfo + pInfo->EventNameOffset);
+	//	 wprintf(L"Received event: %s\n", eventName);
+	//	 // Further parsing of properties would go here, often using TdhFormatProperty
+	//	 // or directly accessing the property data based on the pInfo structure.
 
 	// }
 	// else if (status != ERROR_SUCCESS)
@@ -85,15 +93,60 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 	// 	cout << "TdhGetEventInformation initial call failed with status " << status << endl;
 	// }
 
-	unsigned long pid = pEvent->EventHeader.ProcessId;
-	auto event_id = pEvent->EventHeader.EventDescriptor.Id;
 
-	if (event_id != PROCESS_CREATED_EVENT_ID && event_id != PROCESS_EXITED_EVENT_ID)
+
+	//std::ostream* output = static_cast<std::ostream*>(pEvent->UserContext);
+	//std::string msg = "Event id: " + std::to_string(event_id) + "; pid: " + std::to_string(pid);
+	//Trace(*output, msg);
+	DWORD pid = pEvent->EventHeader.ProcessId;
+	//if (pid != 17048) return;
+	auto event_id = pEvent->EventHeader.EventDescriptor.Id;
+	if (event_id != TCP_ENDPOINT_CREATION_EVENT_ID)
 		return;
 
-	std::ostream* output = static_cast<std::ostream*>(pEvent->UserContext);
-	std::string msg = "Event id: " + std::to_string(event_id) + "; pid: " + std::to_string(pid);
-	Trace(*output, msg);
+	DWORD bufferSize = 0;
+	TdhGetEventInformation(pEvent, 0, NULL, NULL, &bufferSize);
+
+	std::vector<BYTE> buffer(bufferSize);
+	auto info = (PTRACE_EVENT_INFO)buffer.data();
+
+	if (TdhGetEventInformation(pEvent, 0, NULL, info, &bufferSize) != ERROR_SUCCESS)
+		return;
+
+	printf("Process %lu opened new TCP connection to ", pid);
+	//printf("Event ID: %d\n", event_id);
+
+	for (ULONG i = 0; i < info->TopLevelPropertyCount; i++)
+	{
+		PROPERTY_DATA_DESCRIPTOR desc{};
+		desc.PropertyName =
+			(ULONGLONG)((PBYTE)info + info->EventPropertyInfoArray[i].NameOffset);
+		desc.ArrayIndex = ULONG_MAX;
+
+		DWORD size = 0;
+		TdhGetPropertySize(pEvent, 0, NULL, 1, &desc, &size);
+
+		std::vector<BYTE> data(size);
+		if (TdhGetProperty(pEvent, 0, NULL, 1, &desc, size, data.data()) != ERROR_SUCCESS)
+			continue;
+
+		std::wstring name(
+			(PWSTR)((PBYTE)info + info->EventPropertyInfoArray[i].NameOffset));
+		if (name == L"RemoteAddress")
+		{
+			auto x = data.data();
+			auto port = x[3];
+			printf("%u.%u.%u.%u:%u\n", x[4], x[5], x[6], x[7], port);
+			//printf("Dest port: %u\n", port);
+		}
+		//else if (name == L"PortNumber")
+		//{
+		//	USHORT port = ntohs(*(USHORT*)data.data());
+		//	printf("Src? Port: %u\n", port);
+		//}
+	}
+
+	printf("\n");
 }
 
 void CreateTraceSession(wchar_t* session_name, CONTROLTRACE_ID* traceId, TracePropsWithName* trace)
@@ -119,7 +172,7 @@ void CreateTraceSession(wchar_t* session_name, CONTROLTRACE_ID* traceId, TracePr
 		throw runtime_error("Failed starting trace session: " + to_string(res));
 	}
 
-	res = EnableTraceEx2(*traceId, (LPCGUID)&PROVIDER_GUID, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0, 0, 0, NULL);
+	res = EnableTraceEx2(*traceId, (LPCGUID)&TCPIP_PROVIDER_GUID, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_VERBOSE, 0, 0, 0, NULL);
 	if (res != ERROR_SUCCESS)
 	{
 		throw runtime_error("Failed enabling trace provider: " + to_string(res));
