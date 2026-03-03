@@ -25,11 +25,12 @@ void Trace(std::ostream file, std::wstring msg){
 
 void EventCallback(PEVENT_RECORD pEvent)
 {
-	TdhGetEventInformation(
-		pEvent,
+	// TdhGetEventInformation(
+	// 	pEvent,
 
-	)
-	pEvent
+	// )
+	unsigned long pid = pEvent->EventHeader.ProcessId
+	
 
 	TRACE(...)
 }
