@@ -14,8 +14,12 @@ using std::runtime_error;
 #pragma comment(lib, "advapi32.lib")
 
 
-void WriteLog(std::ofstream file, std::wstring){
+void Trace(std::ostream file, std::wstring msg){
 	file << msg << std::endl;
+	
+	if (REFLECT_TO_STDOUT){
+		std::cout << msg << std:endl;
+	}	
 }
 
 
@@ -25,6 +29,7 @@ void EventCallback(PEVENT_RECORD pEvent)
 		pEvent,
 
 	)
+	pEvent
 
 	TRACE(...)
 }
@@ -68,7 +73,7 @@ PROCESSTRACE_HANDLE OpenTraceSession(const LPWSTR session_name, void* context)
 int main()
 {
 	LPWSTR session_name = L""; // FIXME: fill log session name
-	CreateTraceSession(session_name);
+	CreateTraceSession(session_name, &std::cout);
 	auto process_trace_handle = OpenTraceSession(session_name);
 	ProcessTrace(&process_trace_handle, 1, nullptr, nullptr);
 }
