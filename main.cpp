@@ -110,8 +110,12 @@ void CreateTraceSession(wchar_t *session_name, CONTROLTRACE_ID *traceId, TracePr
 	trace->props.LoggerNameOffset = offsetof(TracePropsWithName, sessionName);
 	wcscpy_s(trace->sessionName, session_name);
 
-	ControlTraceW(0, session_name, &trace->props, EVENT_TRACE_CONTROL_STOP);
-	auto res = StartTraceW(traceId, session_name, &trace->props);
+	auto res = ControlTraceW(0, session_name, &trace->props, EVENT_TRACE_CONTROL_STOP);
+	if (res != ERROR_SUCCESS)
+	{
+		throw runtime_error("Failed closing old trace session: " + to_string(res));
+	}
+	res = StartTraceW(traceId, session_name, &trace->props);
 	if (res != ERROR_SUCCESS)
 	{
 		throw runtime_error("Failed starting trace session: " + to_string(res));
@@ -164,8 +168,16 @@ int main()
 		cout << "Trace session processed" << endl;
 
 		logFile.close();
-		ControlTraceW(traceId, session_name, &trace.props, EVENT_TRACE_CONTROL_STOP);
-		CloseTrace(process_trace_handle);
+		res = ControlTraceW(traceId, session_name, &trace.props, EVENT_TRACE_CONTROL_STOP);
+		if (res != ERROR_SUCCESS)
+		{
+			throw runtime_error("Failed closing trace session: " + to_string(res));
+		}
+		res = CloseTrace(process_trace_handle);
+		if (res != ERROR_SUCCESS)
+		{
+			throw runtime_error("Faild closing process trace session" + to_string(res));
+		}
 	}
 	catch (const std::runtime_error &e)
 	{
