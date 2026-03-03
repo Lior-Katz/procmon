@@ -51,7 +51,6 @@ void Trace(std::ostream &file, const std::string &msg)
 
 void WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 {
-	cout << "Event received" << endl;
 	if (pEvent == nullptr)
 	{
 		return;
@@ -109,17 +108,16 @@ void CreateTraceSession(wchar_t *session_name, CONTROLTRACE_ID *traceId, TracePr
 
 	trace->props.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
 	trace->props.LoggerNameOffset = offsetof(TracePropsWithName, sessionName);
-	;
 	wcscpy_s(trace->sessionName, session_name);
 
+	ControlTraceW(0, session_name, &trace->props, EVENT_TRACE_CONTROL_STOP);
 	auto res = StartTraceW(traceId, session_name, &trace->props);
 	if (res != ERROR_SUCCESS)
 	{
 		throw runtime_error("Failed starting trace session: " + to_string(res));
 	}
 
-	LPCGUID ProviderGuid = &PROVIDER_GUID;
-	res = EnableTraceEx2(*traceId, (LPCGUID)&ProviderGuid, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0, 0, 0, NULL);
+	res = EnableTraceEx2(*traceId, (LPCGUID)&PROVIDER_GUID, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0, 0, 0, NULL);
 	if (res != ERROR_SUCCESS)
 	{
 		throw runtime_error("Failed enabling trace provider: " + to_string(res));
