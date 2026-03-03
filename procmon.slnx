@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="procmon.vcxproj" Id="0d44ab3e-8aca-4f3f-8f41-e0caa6402ff1" />
+</Solution>
