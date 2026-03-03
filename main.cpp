@@ -7,6 +7,7 @@
 #include <tdh.h>
 #include <string>
 #include <psapi.h>
+#include <regex>
 
 #include "conf.h"
 
@@ -28,6 +29,11 @@ struct TracePropsWithName
 {
 	EVENT_TRACE_PROPERTIES props;
 	WCHAR sessionName[MAX_SESSION_NAME_SIZE];
+};
+
+struct TraceContext {
+    std::ostream* output;
+    string procNameRegex;
 };
 
 ofstream OpenLogFile()
@@ -132,6 +138,18 @@ ULONG GetPidFromEvent(PEVENT_RECORD pEvent)
 	return resultPid;
 }
 
+bool FilterProcName(string procName, string procNameRegex){
+    try {
+        std::regex pattern(procNameRegex, std::regex_constants::icase);
+
+        return std::regex_match(procName, pattern);
+    }
+    catch (const std::regex_error& e) {
+        // invalid regex == no match
+        return false;
+    }
+}
+
 VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 {
 	if (pEvent == nullptr)
@@ -139,16 +157,19 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 		return;
 	}
 
+	TraceContext *ctx = static_cast<TraceContext *>(pEvent->UserContext);
+	if (!ctx) return;
+
 	ULONG pid = GetPidFromEvent(pEvent);
 	auto eventId = pEvent->EventHeader.EventDescriptor.Id;
 
 	if (eventId != PROCESS_CREATED_EVENT_ID && eventId != PROCESS_EXITED_EVENT_ID)
 		return;
 
-	std::ostream *output = static_cast<std::ostream *>(pEvent->UserContext);
+	std::ostream *output = static_cast<std::ostream *>(ctx->output);
 	string procName = (eventId != PROCESS_EXITED_EVENT_ID) ? GetProcNameByPid(pid) : "BLOB";
 
-	if (!procName.empty())
+	if (FilterProcName(procName, ctx->procNameRegex))
 	{
 		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+] PID: " + to_string(pid) + "; Process Name: " + procName : "[-] PID: " + to_string(pid);
 		Trace(*output, msg);
@@ -202,21 +223,34 @@ PROCESSTRACE_HANDLE OpenTraceSession(wchar_t *session_name, void *context)
 	return trace_handle;
 }
 
-int main()
+
+int main(int argc, char* argv[])
 {
-	try
-	{
+	try {
+    	if (argc < 2) {
+    	    std::cout << "Usage: procmon.exe <process regex>" << std::endl;
+    	    return 1;
+    	}
+
+    	string procNameRegex = argv[1];
 		ofstream logFile = OpenLogFile();
+
+		TraceContext context;
+		context.output = &logFile;
+		context.procNameRegex = procNameRegex;
+
 		wchar_t session_name[] = SESSION_NAME;
 
 		CONTROLTRACE_ID traceId = 0;
 		TracePropsWithName trace;
+
 		CreateTraceSession(session_name, &traceId, &trace);
 		cout << "Trace session created with id: " << traceId << endl;
 
-		PROCESSTRACE_HANDLE process_trace_handle = OpenTraceSession(session_name, static_cast<void *>(&logFile));
+		PROCESSTRACE_HANDLE process_trace_handle = OpenTraceSession(session_name, static_cast<void *>(&context));
 		cout << "Trace session opened" << endl;
 
+		cout << "--------------------------------------" << endl;
 		auto res = ProcessTrace(&process_trace_handle, 1, nullptr, nullptr);
 		if (res != ERROR_SUCCESS)
 		{
