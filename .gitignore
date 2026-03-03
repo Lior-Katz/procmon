@@ -39,3 +39,11 @@
 
 # debug information files
 *.dwo
+
+x64/
+.vs/
+.vscode/
+procmon/
+procmon.vcxproj*
+procmon.slnx
+procmon.log
