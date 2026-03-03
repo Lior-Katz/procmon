@@ -6,6 +6,7 @@
 #include <evntrace.h>
 #include <tdh.h>
 #include <string>
+#include <psapi.h>
 
 #include "conf.h"
 
@@ -13,13 +14,15 @@ using std::cout;
 using std::endl;
 using std::ofstream;
 using std::runtime_error;
+using std::string;
 using std::to_string;
 
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "psapi.lib")
 
-constexpr unsigned int PROCESS_CREATED_EVENT_ID = 4688;
-constexpr unsigned int PROCESS_EXITED_EVENT_ID = 4689;
+constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
+constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
 
 struct TracePropsWithName
 {
@@ -39,7 +42,7 @@ ofstream OpenLogFile()
 	return file;
 }
 
-void Trace(std::ostream &file, const std::string &msg)
+void Trace(std::ostream &file, const string &msg)
 {
 	file << msg << endl;
 
@@ -49,53 +52,107 @@ void Trace(std::ostream &file, const std::string &msg)
 	}
 }
 
-void WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
+string GetProcNameByPid(DWORD pid)
+{
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	if (!hProcess)
+	{
+		return "GET PROC NAME FAILED";
+	}
+
+	char buffer[MAX_PATH] = {0};
+	DWORD size = MAX_PATH;
+
+	if (QueryFullProcessImageNameA(hProcess, 0, buffer, &size))
+	{
+		CloseHandle(hProcess);
+
+		string fullPath(buffer);
+
+		// Extract file name only
+		size_t pos = fullPath.find_last_of("\\/");
+		return (pos != string::npos) ? fullPath.substr(pos + 1) : fullPath;
+	}
+
+	DWORD error = GetLastError();
+	CloseHandle(hProcess);
+
+	return "GET PROC NAME FAILED";
+}
+
+ULONG GetPidFromEvent(PEVENT_RECORD pEvent)
+{
+	ULONG resultPid = pEvent->EventHeader.ProcessId; // fallback
+
+	ULONG bufferSize = 0;
+	TDHSTATUS status = TdhGetEventInformation(pEvent, 0, nullptr, nullptr, &bufferSize);
+
+	if (status != ERROR_INSUFFICIENT_BUFFER)
+	{
+		return resultPid;
+	}
+
+	std::unique_ptr<BYTE[]> buffer(new BYTE[bufferSize]);
+	PTRACE_EVENT_INFO pInfo = reinterpret_cast<PTRACE_EVENT_INFO>(buffer.get());
+
+	status = TdhGetEventInformation(pEvent, 0, nullptr, pInfo, &bufferSize);
+	if (status != ERROR_SUCCESS)
+	{
+		return resultPid;
+	}
+
+	for (USHORT i = 0; i < pInfo->TopLevelPropertyCount; i++)
+	{
+		PWSTR propName = (PWSTR)((PBYTE)pInfo + pInfo->EventPropertyInfoArray[i].NameOffset);
+
+		if (_wcsicmp(propName, L"ProcessID") == 0)
+		{
+			ULONG pid = 0;
+			PROPERTY_DATA_DESCRIPTOR propDesc = {};
+			propDesc.PropertyName = (ULONGLONG)L"ProcessID";
+			propDesc.ArrayIndex = ULONG_MAX;
+
+			TDHSTATUS status = TdhGetProperty(
+				pEvent,
+				0,
+				nullptr,
+				1,
+				&propDesc,
+				sizeof(pid),
+				(PBYTE)&pid);
+
+			if (status == ERROR_SUCCESS)
+			{
+				resultPid = pid;
+			}
+		}
+	}
+
+	// Fallback: return EventHeader.ProcessId if property not found
+	return resultPid;
+}
+
+VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 {
 	if (pEvent == nullptr)
 	{
 		return;
 	}
 
-	cout << "Received event with id: " << pEvent->EventHeader.EventDescriptor.Id << endl;
+	ULONG pid = GetPidFromEvent(pEvent);
+	auto eventId = pEvent->EventHeader.EventDescriptor.Id;
 
-	// PTRACE_EVENT_INFO pInfo;
-	// ULONG bufferSize = 0;
-
-	// // Call TdhGetEventInformation once to get the required buffer size
-	// TDHSTATUS status = TdhGetEventInformation(pEvent, 0, NULL, NULL, &bufferSize);
-
-	// if (status == ERROR_INSUFFICIENT_BUFFER)
-	// {
-	// 	std::unique_ptr<BYTE[]> buffer(new BYTE[bufferSize]);
-	// 	PTRACE_EVENT_INFO pInfo = reinterpret_cast<PTRACE_EVENT_INFO>(buffer.get());
-
-	// 	// Call TdhGetEventInformation a second time to get the actual event information
-	// 	status = TdhGetEventInformation(pEvent, 0, NULL, pInfo, &bufferSize);
-
-	// 	if (status != ERROR_SUCCESS){
-	// 		cout << "TdhGetEventInformation initial call failed with status " << status << endl;
-	// 	}
-
-	// 	PWSTR eventName = (PWSTR)((PBYTE)pInfo + pInfo->EventNameOffset);
-	// 	wprintf(L"Received event: %s\n", eventName);
-	// 	// Further parsing of properties would go here, often using TdhFormatProperty
-	// 	// or directly accessing the property data based on the pInfo structure.
-
-	// }
-	// else if (status != ERROR_SUCCESS)
-	// {
-	// 	cout << "TdhGetEventInformation initial call failed with status " << status << endl;
-	// }
-
-	unsigned long pid = pEvent->EventHeader.ProcessId;
-	auto event_id = pEvent->EventHeader.EventDescriptor.Id;
-
-	if (event_id != PROCESS_CREATED_EVENT_ID && event_id != PROCESS_EXITED_EVENT_ID)
+	if (eventId != PROCESS_CREATED_EVENT_ID && eventId != PROCESS_EXITED_EVENT_ID)
 		return;
 
 	std::ostream *output = static_cast<std::ostream *>(pEvent->UserContext);
-	std::string msg = "Event id: " + std::to_string(event_id) + "; pid: " + std::to_string(pid);
-	Trace(*output, msg);
+	string procName = (eventId != PROCESS_EXITED_EVENT_ID) ? GetProcNameByPid(pid) : "BLOB";
+
+	if (!procName.empty())
+	{
+		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+] PID: " + to_string(pid) + "; Process Name: " + procName : "[-] PID: " + to_string(pid);
+		Trace(*output, msg);
+	}
 }
 
 void CreateTraceSession(wchar_t *session_name, CONTROLTRACE_ID *traceId, TracePropsWithName *trace)
