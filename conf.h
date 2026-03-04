@@ -4,7 +4,6 @@
 
 #define LOG_FILE ("procmon.log")
 #define SESSION_NAME (L"KERNEL_LOGGER_NAME")
-#define INVALID_PROC_NAME "[FIND PROCESS NAME FAILED]"
 
 constexpr int MAX_SESSION_NAME_SIZE = 1024;
 constexpr bool REFLECT_TO_STDOUT = true;
