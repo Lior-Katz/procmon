@@ -67,7 +67,7 @@ string GetProcNameByPid(DWORD pid)
 	HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
 	if (!hProcess)
 	{
-		return "GET PROC NAME FAILED";
+		return INVALID_PROC_NAME;
 	}
 
 	char buffer[MAX_PATH] = {0};
@@ -87,7 +87,7 @@ string GetProcNameByPid(DWORD pid)
 	DWORD error = GetLastError();
 	CloseHandle(hProcess);
 
-	return "GET PROC NAME FAILED";
+	return INVALID_PROC_NAME;
 }
 
 ULONG GetPidFromEvent(PEVENT_RECORD pEvent)
@@ -156,6 +156,43 @@ bool FilterProcName(string procName, string procNameRegex)
 	}
 }
 
+void LogLoadedDlls(ULONG pid, std::ostream &file)
+{
+	HANDLE procHandle = OpenProcess(PROCESS_ALL_ACCESS, TRUE, pid);
+	if (procHandle == NULL)
+	{
+		Trace(file, "Error in OpenProcess: " + to_string(GetLastError()));
+		return;
+	}
+
+	HMODULE modulesArr[MAX_DLL_ARR_SIZE];
+	DWORD bytesNeeded;
+	if (EnumProcessModules(procHandle, modulesArr, sizeof(modulesArr), &bytesNeeded) == 0)
+	{
+		Trace(file, "Error in EnumProcessModules: " + to_string(GetLastError()));
+		return;
+	}
+	if (bytesNeeded > sizeof(modulesArr))
+	{
+		Trace(file, "Error in EnumProcessModules: There are too many modules loaded");
+		return;
+	}
+
+	for (HMODULE modHandle : modulesArr)
+	{
+		char dllName[MAX_DLL_NAME_SIZE];
+		if (GetModuleFileNameA(modHandle, dllName, MAX_DLL_NAME_SIZE) == 0 && GetLastError() != ERROR_MOD_NOT_FOUND)
+		{
+			Trace(file, "Error in GetModuleFileNameA: " + to_string(GetLastError()));
+			return;
+		}
+
+		if (GetLastError() != ERROR_MOD_NOT_FOUND) {
+			Trace(file, string("Loaded DLL Name: ") + dllName);
+		}
+	}
+}
+
 VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 {
 	if (pEvent == nullptr)
@@ -174,12 +211,15 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 		return;
 
 	std::ostream *output = static_cast<std::ostream *>(ctx->output);
-	
+
 	string procName;
-	if (eventId != PROCESS_EXITED_EVENT_ID){
+	if (eventId != PROCESS_EXITED_EVENT_ID)
+	{
 		procName = GetProcNameByPid(pid);
 		procDict[pid] = procName;
-	} else {
+	}
+	else
+	{
 		auto it = procDict.find(pid);
 		if (it != procDict.end())
 		{
@@ -193,6 +233,12 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+]" : "[-]";
 		msg += " PID: " + to_string(pid) + "; Process Name: " + procName;
 		Trace(*output, msg);
+
+		if (eventId == PROCESS_CREATED_EVENT_ID && procName != INVALID_PROC_NAME) {
+			Trace(*output, "------------------ Loaded DLLs for " + procName + " ------------------");
+			LogLoadedDlls(pid, *output);
+			Trace(*output, "-----------------------------------------------------------");
+		}
 	}
 }
 
@@ -249,7 +295,7 @@ int main(int argc, char *argv[])
 	{
 		if (argc < 2)
 		{
-			std::cout << "Usage: procmon.exe <process regex>" << std::endl;
+			std::cout << "Usage: procmon.exe <Process Regex>" << std::endl;
 			return 1;
 		}
 
@@ -271,7 +317,7 @@ int main(int argc, char *argv[])
 		PROCESSTRACE_HANDLE process_trace_handle = OpenTraceSession(session_name, static_cast<void *>(&context));
 		cout << "Trace session opened" << endl;
 
-		cout << "--------------------------------------" << endl;
+		cout << "-------------------------- Process Monitor -------------------------------" << endl;
 		auto res = ProcessTrace(&process_trace_handle, 1, nullptr, nullptr);
 		if (res != ERROR_SUCCESS)
 		{
