@@ -142,6 +142,23 @@ typedef struct _VM_COUNTERS_EX
 	SIZE_T PrivateUsage;
 } VM_COUNTERS_EX, * PVM_COUNTERS_EX;
 
+typedef struct _M_SYSTEM_THREAD_INFORMATION
+{                                    /* win32/win64 */
+	LARGE_INTEGER KernelTime;          /* 00/00 */
+	LARGE_INTEGER UserTime;            /* 08/08 */
+	LARGE_INTEGER CreateTime;          /* 10/10 */
+	DWORD         dwTickCount;         /* 18/18 */
+	LPVOID        StartAddress;        /* 1c/20 */
+	CLIENT_ID     ClientId;            /* 20/28 */
+	DWORD         dwCurrentPriority;   /* 28/38 */
+	DWORD         dwBasePriority;      /* 2c/3c */
+	DWORD         dwContextSwitches;   /* 30/40 */
+	DWORD         dwThreadState;       /* 34/44 */
+	DWORD         dwWaitReason;        /* 38/48 */
+	DWORD         dwUnknown;           /* 3c/4c */
+} M_SYSTEM_THREAD_INFORMATION, * PMSYSTEM_THREAD_INFORMATION;
+
+
 typedef struct _M_SYSTEM_PROCESS_INFORMATION {
 //#ifdef __WINESRC__                  /* win32/win64 */
 	ULONG NextEntryOffset;             /* 00/00 */
@@ -162,7 +179,7 @@ typedef struct _M_SYSTEM_PROCESS_INFORMATION {
 	ULONG_PTR UniqueProcessKey;        /* 54/68 */
 	VM_COUNTERS_EX vmCounters;         /* 58/70 */
 	IO_COUNTERS ioCounters;            /* 88/d0 */
-	M_SYSTEM_THREAD_INFORMATION threadInfo[1];   /* b8/100 */
+	M_SYSTEM_THREAD_INFORMATION threadInfo[];   /* b8/100 */
 //#else
 //	ULONG NextEntryOffset;             /* 00/00 */
 //	BYTE Reserved1[52];                /* 04/04 */
@@ -177,23 +194,6 @@ typedef struct _M_SYSTEM_PROCESS_INFORMATION {
 //	LARGE_INTEGER Reserved6[6];        /* 88/d0 */
 //#endif
 } M_SYSTEM_PROCESS_INFORMATION, * PMSYSTEM_PROCESS_INFORMATION;
-
-typedef struct _M_SYSTEM_THREAD_INFORMATION
-{                                    /* win32/win64 */
-	LARGE_INTEGER KernelTime;          /* 00/00 */
-	LARGE_INTEGER UserTime;            /* 08/08 */
-	LARGE_INTEGER CreateTime;          /* 10/10 */
-	DWORD         dwTickCount;         /* 18/18 */
-	LPVOID        StartAddress;        /* 1c/20 */
-	CLIENT_ID     ClientId;            /* 20/28 */
-	DWORD         dwCurrentPriority;   /* 28/38 */
-	DWORD         dwBasePriority;      /* 2c/3c */
-	DWORD         dwContextSwitches;   /* 30/40 */
-	DWORD         dwThreadState;       /* 34/44 */
-	DWORD         dwWaitReason;        /* 38/48 */
-	DWORD         dwUnknown;           /* 3c/4c */
-} M_SYSTEM_THREAD_INFORMATION, * PMSYSTEM_THREAD_INFORMATION;
-
 
 
 
