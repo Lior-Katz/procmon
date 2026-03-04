@@ -4,8 +4,11 @@
 
 #define LOG_FILE ("procmon.log")
 #define SESSION_NAME (L"KERNEL_LOGGER_NAME")
+
 constexpr int MAX_SESSION_NAME_SIZE = 1024;
 constexpr bool REFLECT_TO_STDOUT = true;
+constexpr int MAX_DLL_NAME_SIZE = 1024;
+constexpr int MAX_DLL_ARR_SIZE = 1024;
 
 DEFINE_GUID(
     PROCESS_PROVIDER_GUID,

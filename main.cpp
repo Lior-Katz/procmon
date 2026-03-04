@@ -150,6 +150,37 @@ bool FilterProcName(string procName, string procNameRegex)
 	}
 }
 
+void LogLoadedDlls(ULONG pid, std::ostream &file, HANDLE hProcess)
+{
+	HMODULE modulesArr[MAX_DLL_ARR_SIZE];
+	DWORD bytesNeeded;
+	if (EnumProcessModulesEx(hProcess, modulesArr, sizeof(modulesArr), &bytesNeeded, LIST_MODULES_ALL) == 0)
+	{
+		Trace(file, "Error in EnumProcessModules: " + to_string(GetLastError()));
+		return;
+	}
+	if (bytesNeeded > sizeof(modulesArr))
+	{
+		Trace(file, "Error in EnumProcessModules: There are too many modules loaded");
+		return;
+	}
+
+	for (HMODULE modHandle : modulesArr)
+	{
+		char dllName[MAX_DLL_NAME_SIZE];
+		if (GetModuleFileNameA(modHandle, dllName, MAX_DLL_NAME_SIZE) == 0 && GetLastError() != ERROR_MOD_NOT_FOUND)
+		{
+			Trace(file, "Error in GetModuleFileNameA: " + to_string(GetLastError()));
+			return;
+		}
+
+		if (GetLastError() != ERROR_MOD_NOT_FOUND)
+		{
+			Trace(file, string("Loaded DLL Name: ") + dllName);
+		}
+	}
+}
+
 VOID WINAPI ProcessEventRecordCallback(PEVENT_RECORD pEvent)
 {
 	if (pEvent == nullptr)
@@ -205,6 +236,13 @@ VOID WINAPI ProcessEventRecordCallback(PEVENT_RECORD pEvent)
 		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+]" : "[-]";
 		msg += " PID: " + to_string(pid) + "; Process Name: " + procName;
 		Trace(*output, msg);
+
+		if (eventId == PROCESS_CREATED_EVENT_ID)
+		{
+			Trace(*output, "------------------ Loaded DLLs for " + procName + " ------------------");
+			LogLoadedDlls(pid, *output, hProcess);
+			Trace(*output, "-----------------------------------------------------------");
+		}
 	}
 	CloseHandle(hProcess);
 }
