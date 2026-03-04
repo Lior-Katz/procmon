@@ -8,6 +8,7 @@
 #include <string>
 #include <psapi.h>
 #include <regex>
+#include <unordered_map>
 
 #include "conf.h"
 
@@ -25,15 +26,18 @@ using std::to_string;
 constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
 constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
 
+std::unordered_map<ULONG, string> procDict; // PID -> Process Name
+
 struct TracePropsWithName
 {
 	EVENT_TRACE_PROPERTIES props;
 	WCHAR sessionName[MAX_SESSION_NAME_SIZE];
 };
 
-struct TraceContext {
-    std::ostream* output;
-    string procNameRegex;
+struct TraceContext
+{
+	std::ostream *output;
+	string procNameRegex;
 };
 
 ofstream OpenLogFile()
@@ -134,20 +138,22 @@ ULONG GetPidFromEvent(PEVENT_RECORD pEvent)
 		}
 	}
 
-	// Fallback: return EventHeader.ProcessId if property not found
 	return resultPid;
 }
 
-bool FilterProcName(string procName, string procNameRegex){
-    try {
-        std::regex pattern(procNameRegex, std::regex_constants::icase);
+bool FilterProcName(string procName, string procNameRegex)
+{
+	try
+	{
+		std::regex pattern(procNameRegex, std::regex_constants::icase);
 
-        return std::regex_match(procName, pattern);
-    }
-    catch (const std::regex_error& e) {
-        // invalid regex == no match
-        return false;
-    }
+		return std::regex_match(procName, pattern);
+	}
+	catch (const std::regex_error &e)
+	{
+		// invalid regex == no match
+		return false;
+	}
 }
 
 VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
@@ -158,7 +164,8 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 	}
 
 	TraceContext *ctx = static_cast<TraceContext *>(pEvent->UserContext);
-	if (!ctx) return;
+	if (!ctx)
+		return;
 
 	ULONG pid = GetPidFromEvent(pEvent);
 	auto eventId = pEvent->EventHeader.EventDescriptor.Id;
@@ -167,11 +174,24 @@ VOID WINAPI EventRecordCallback(PEVENT_RECORD pEvent)
 		return;
 
 	std::ostream *output = static_cast<std::ostream *>(ctx->output);
-	string procName = (eventId != PROCESS_EXITED_EVENT_ID) ? GetProcNameByPid(pid) : "BLOB";
+	
+	string procName;
+	if (eventId != PROCESS_EXITED_EVENT_ID){
+		procName = GetProcNameByPid(pid);
+		procDict[pid] = procName;
+	} else {
+		auto it = procDict.find(pid);
+		if (it != procDict.end())
+		{
+			procName = it->second;
+			procDict.erase(it);
+		}
+	}
 
-	if (FilterProcName(procName, ctx->procNameRegex))
+	if (!procName.empty() && FilterProcName(procName, ctx->procNameRegex))
 	{
-		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+] PID: " + to_string(pid) + "; Process Name: " + procName : "[-] PID: " + to_string(pid);
+		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+]" : "[-]";
+		msg += " PID: " + to_string(pid) + "; Process Name: " + procName;
 		Trace(*output, msg);
 	}
 }
@@ -223,16 +243,17 @@ PROCESSTRACE_HANDLE OpenTraceSession(wchar_t *session_name, void *context)
 	return trace_handle;
 }
 
-
-int main(int argc, char* argv[])
+int main(int argc, char *argv[])
 {
-	try {
-    	if (argc < 2) {
-    	    std::cout << "Usage: procmon.exe <process regex>" << std::endl;
-    	    return 1;
-    	}
+	try
+	{
+		if (argc < 2)
+		{
+			std::cout << "Usage: procmon.exe <process regex>" << std::endl;
+			return 1;
+		}
 
-    	string procNameRegex = argv[1];
+		string procNameRegex = argv[1];
 		ofstream logFile = OpenLogFile();
 
 		TraceContext context;
