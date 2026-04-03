@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <winternl.h>
 #include "conf.h"
+#include <vector>
 
 using std::cout;
 using std::endl;
@@ -23,13 +24,15 @@ using std::vector;
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "Ws2_32.lib")
+
 
 #define INVALID_PROC_NAME "[FIND PROCESS NAME FAILED]"
 
 constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
 constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
 constexpr unsigned int WAIT_REASON_SUSPENDED = 5;
-
+constexpr unsigned int TCP_ENDPOINT_CREATION_EVENT_ID = 1002;
 
 std::unordered_map<ULONG, string> procDict; // PID -> Process Name
 
@@ -375,6 +378,51 @@ VOID WINAPI ProcessEventRecordCallback(PEVENT_RECORD pEvent)
 	CloseHandle(hProcess);
 }
 
+void TcpConnectionEventRecordCallback(PEVENT_RECORD pEvent)
+{
+	DWORD pid = pEvent->EventHeader.ProcessId;
+	auto event_id = pEvent->EventHeader.EventDescriptor.Id;
+	if (event_id != TCP_ENDPOINT_CREATION_EVENT_ID)
+		return;
+
+	DWORD bufferSize = 0;
+	TdhGetEventInformation(pEvent, 0, NULL, NULL, &bufferSize);
+
+	std::vector<BYTE> buffer(bufferSize);
+	auto info = (PTRACE_EVENT_INFO)buffer.data();
+
+	if (TdhGetEventInformation(pEvent, 0, NULL, info, &bufferSize) != ERROR_SUCCESS)
+		return;
+
+	printf("Process %lu opened new TCP connection to ", pid);
+
+	for (ULONG i = 0; i < info->TopLevelPropertyCount; i++)
+	{
+		PROPERTY_DATA_DESCRIPTOR desc{};
+		desc.PropertyName =
+			(ULONGLONG)((PBYTE)info + info->EventPropertyInfoArray[i].NameOffset);
+		desc.ArrayIndex = ULONG_MAX;
+
+		DWORD size = 0;
+		TdhGetPropertySize(pEvent, 0, nullptr, 1, &desc, &size);
+
+		std::vector<BYTE> data(size);
+		if (TdhGetProperty(pEvent, 0, nullptr, 1, &desc, size, data.data()) != ERROR_SUCCESS)
+			continue;
+
+		std::wstring name(
+			(PWSTR)((PBYTE)info + info->EventPropertyInfoArray[i].NameOffset));
+		if (name == L"RemoteAddress")
+		{
+			auto x = data.data();
+			auto port = x[3];
+			printf("%u.%u.%u.%u:%u\n", x[4], x[5], x[6], x[7], port);
+		}
+	}
+
+	printf("\n");
+}
+
 VOID WINAPI EventRecordCallback(const PEVENT_RECORD pEvent)
 {
 	if (!pEvent)
@@ -384,6 +432,10 @@ VOID WINAPI EventRecordCallback(const PEVENT_RECORD pEvent)
 		if (IsEqualGUID(pEvent->EventHeader.ProviderId, PROCESS_PROVIDER_GUID))
 		{
 			ProcessEventRecordCallback(pEvent);
+		}
+		else if (IsEqualGUID(pEvent->EventHeader.ProviderId, TCPIP_PROVIDER_GUID))
+		{
+			TcpConnectionEventRecordCallback(pEvent);
 		}
 	}
 	catch (const runtime_error& e)
@@ -463,7 +515,7 @@ int main(int argc, char *argv[])
 		context.procNameRegex = procNameRegex;
 
 		wchar_t session_name[] = SESSION_NAME;
-		const vector<LPCGUID> providers{const_cast<LPGUID>(&PROCESS_PROVIDER_GUID)};
+		const vector<LPCGUID> providers{const_cast<LPGUID>(&PROCESS_PROVIDER_GUID), const_cast<LPCGUID>(&TCPIP_PROVIDER_GUID)};
 
 		TracePropsWithName trace;
 
