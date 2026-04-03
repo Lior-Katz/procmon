@@ -9,7 +9,7 @@
 #include <psapi.h>
 #include <regex>
 #include <unordered_map>
-
+#include <winternl.h>
 #include "conf.h"
 
 using std::cout;
@@ -28,6 +28,8 @@ using std::vector;
 
 constexpr unsigned int PROCESS_CREATED_EVENT_ID = 1;
 constexpr unsigned int PROCESS_EXITED_EVENT_ID = 2;
+constexpr unsigned int WAIT_REASON_SUSPENDED = 5;
+
 
 std::unordered_map<ULONG, string> procDict; // PID -> Process Name
 
@@ -42,6 +44,69 @@ struct TraceContext
 	std::ostream *output;
 	string procNameRegex;
 };
+
+typedef NTSTATUS(NTAPI* NtQuerySystemInformation_t)(
+	SYSTEM_INFORMATION_CLASS SystemInformationClass,
+	PVOID SystemInformation,
+	ULONG SystemInformationLength,
+	PULONG ReturnLength
+	);
+
+typedef struct _VM_COUNTERS_EX
+{
+	SIZE_T PeakVirtualSize;
+	SIZE_T VirtualSize;
+	ULONG PageFaultCount;
+	SIZE_T PeakWorkingSetSize;
+	SIZE_T WorkingSetSize;
+	SIZE_T QuotaPeakPagedPoolUsage;
+	SIZE_T QuotaPagedPoolUsage;
+	SIZE_T QuotaPeakNonPagedPoolUsage;
+	SIZE_T QuotaNonPagedPoolUsage;
+	SIZE_T PagefileUsage;
+	SIZE_T PeakPagefileUsage;
+	SIZE_T PrivateUsage;
+} VM_COUNTERS_EX, * PVM_COUNTERS_EX;
+
+typedef struct _system_thread_information_t
+{                                    /* win32/win64 */
+	LARGE_INTEGER KernelTime;          /* 00/00 */
+	LARGE_INTEGER UserTime;            /* 08/08 */
+	LARGE_INTEGER CreateTime;          /* 10/10 */
+	DWORD         dwTickCount;         /* 18/18 */
+	LPVOID        StartAddress;        /* 1c/20 */
+	CLIENT_ID     ClientId;            /* 20/28 */
+	DWORD         dwCurrentPriority;   /* 28/38 */
+	DWORD         dwBasePriority;      /* 2c/3c */
+	DWORD         dwContextSwitches;   /* 30/40 */
+	DWORD         dwThreadState;       /* 34/44 */
+	DWORD         dwWaitReason;        /* 38/48 */
+	DWORD         dwUnknown;           /* 3c/4c */
+} system_thread_information_t, * p_system_thread_information_t;
+
+
+typedef struct _system_process_information_t {
+//#ifdef __WINESRC__                  /* win32/win64 */
+	ULONG NextEntryOffset;             /* 00/00 */
+	DWORD dwThreadCount;               /* 04/04 */
+	LARGE_INTEGER WorkingSetPrivateSize; /* 08/08 */
+	ULONG HardFaultCount;              /* 10/10 */
+	ULONG NumberOfThreadsHighWatermark;/* 14/14 */
+	ULONGLONG CycleTime;               /* 18/18 */
+	LARGE_INTEGER CreationTime;        /* 20/20 */
+	LARGE_INTEGER UserTime;            /* 28/28 */
+	LARGE_INTEGER KernelTime;          /* 30/30 */
+	UNICODE_STRING ProcessName;        /* 38/38 */
+	DWORD dwBasePriority;              /* 40/48 */
+	HANDLE UniqueProcessId;            /* 44/50 */
+	HANDLE ParentProcessId;            /* 48/58 */
+	ULONG HandleCount;                 /* 4c/60 */
+	ULONG SessionId;                   /* 50/64 */
+	ULONG_PTR UniqueProcessKey;        /* 54/68 */
+	VM_COUNTERS_EX vmCounters;         /* 58/70 */
+	IO_COUNTERS ioCounters;            /* 88/d0 */
+	system_thread_information_t threadInfo[1];   /* b8/100 */
+} system_process_information_t, * p_system_process_information_t;
 
 ofstream OpenLogFile()
 {
@@ -63,6 +128,68 @@ void Trace(std::ostream &file, const string &msg)
 	{
 		cout << msg << endl;
 	}
+}
+
+NtQuerySystemInformation_t LoadNtQuerySystemInformation()
+{
+	HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+	if (!hNtdll)
+	{
+		hNtdll = LoadLibraryW(L"ntdll.dll");
+		if (!hNtdll)
+		{
+			std::cerr << "Failed to load ntdll.dll\n";
+			throw runtime_error("Failed to load ntdll.dll");
+		}
+	}
+
+	auto func = reinterpret_cast<NtQuerySystemInformation_t>(
+		GetProcAddress(hNtdll, "NtQuerySystemInformation")
+		);
+
+	if (!func)
+	{
+		std::cerr << "Failed to resolve NtQuerySystemInformation\n";
+		throw runtime_error("Failed to resolve NtQuerySystemInformation");
+	}
+
+	return func;
+}
+
+bool IsProcessSuspended(DWORD pid)
+{
+	NtQuerySystemInformation_t NtQuerySystemInformation = LoadNtQuerySystemInformation();
+	unsigned long returnLength = 0;
+	NtQuerySystemInformation(SystemProcessInformation, nullptr, 0, &returnLength);
+
+	std::vector<BYTE> buffer(returnLength);
+	NTSTATUS status = NtQuerySystemInformation(SystemProcessInformation, buffer.data(), returnLength, &returnLength);
+	if (!NT_SUCCESS(status))
+	{
+		throw runtime_error("Failed querying system information to check if process is suspended");
+	}
+	system_process_information_t* pInfo = reinterpret_cast<system_process_information_t*>(buffer.data());
+	while (true)
+	{
+		if ((DWORD)(uintptr_t)pInfo->UniqueProcessId == pid)
+		{
+			break;
+		}
+		if (pInfo->NextEntryOffset == 0)
+			throw runtime_error("Process not found when checking if it's suspended");
+		pInfo = reinterpret_cast<system_process_information_t*>(reinterpret_cast<BYTE*>(pInfo) + pInfo->NextEntryOffset);
+	}
+
+	// iterate threads to find if any of them are not suspended
+	bool suspended = true;
+	for (DWORD i = 0; i < pInfo->dwThreadCount; i++) {
+		system_thread_information_t threadInfo = pInfo->threadInfo[i];
+		if (threadInfo.dwWaitReason != WAIT_REASON_SUSPENDED)
+		{
+			suspended = false;
+		}
+	}
+	return suspended;
 }
 
 string GetProcNameByPid(DWORD pid, HANDLE hProcess)
@@ -150,6 +277,37 @@ bool FilterProcName(string procName, string procNameRegex)
 	}
 }
 
+void LogLoadedDlls(ULONG pid, std::ostream &file, HANDLE hProcess)
+{
+	HMODULE modulesArr[MAX_DLL_ARR_SIZE];
+	DWORD bytesNeeded;
+	if (EnumProcessModulesEx(hProcess, modulesArr, sizeof(modulesArr), &bytesNeeded, LIST_MODULES_ALL) == 0)
+	{
+		Trace(file, "Error in EnumProcessModules: " + to_string(GetLastError()));
+		return;
+	}
+	if (bytesNeeded > sizeof(modulesArr))
+	{
+		Trace(file, "Error in EnumProcessModules: There are too many modules loaded");
+		return;
+	}
+
+	for (HMODULE modHandle : modulesArr)
+	{
+		char dllName[MAX_DLL_NAME_SIZE];
+		if (GetModuleFileNameA(modHandle, dllName, MAX_DLL_NAME_SIZE) == 0 && GetLastError() != ERROR_MOD_NOT_FOUND)
+		{
+			Trace(file, "Error in GetModuleFileNameA: " + to_string(GetLastError()));
+			return;
+		}
+
+		if (GetLastError() != ERROR_MOD_NOT_FOUND)
+		{
+			Trace(file, string("Loaded DLL Name: ") + dllName);
+		}
+	}
+}
+
 VOID WINAPI ProcessEventRecordCallback(PEVENT_RECORD pEvent)
 {
 	if (pEvent == nullptr)
@@ -202,9 +360,17 @@ VOID WINAPI ProcessEventRecordCallback(PEVENT_RECORD pEvent)
 
 	if (!procName.empty() && FilterProcName(procName, ctx->procNameRegex))
 	{
+		bool isSuspended = eventId == PROCESS_CREATED_EVENT_ID && IsProcessSuspended(pid);
 		string msg = (eventId == PROCESS_CREATED_EVENT_ID) ? "[+]" : "[-]";
-		msg += " PID: " + to_string(pid) + "; Process Name: " + procName;
+		msg += " PID: " + to_string(pid) + "; Process Name: " + procName + (isSuspended ? " [SUSPENDED]" : "");
 		Trace(*output, msg);
+
+		if (eventId == PROCESS_CREATED_EVENT_ID && !isSuspended)
+		{
+			Trace(*output, "------------------ Loaded DLLs for " + procName + " ------------------");
+			LogLoadedDlls(pid, *output, hProcess);
+			Trace(*output, "-----------------------------------------------------------");
+		}
 	}
 	CloseHandle(hProcess);
 }
